@@ -30,7 +30,7 @@ DESCRIPTION OF OPERATION
    8 characters, one per LED (left to right):
         "P" = use the PRIMARY colour
         "S" = use the SECONDARY colour
-   The default map (DEFAULT_PIXEL_MAP) is "SPPPPPPS": the two end LEDs use
+   The default map (DEFAULT_PIXEL_MAP) is "PPPPPS": the two end LEDs use
    the secondary colour and the central six use the primary colour.
    Individual statuses can use a different map via PIXEL_MAP_OVERRIDES.
 
@@ -85,7 +85,7 @@ LIGHT_BLUE = (0, 128, 255)
 #   "PPPPPPPP"  all primary (secondary not shown)
 #   "PPPSSPPP"  centre two secondary
 #   "SSPPPPSS"  outer two each side secondary
-DEFAULT_PIXEL_MAP = "SPPPPPPS"
+DEFAULT_PIXEL_MAP = "SSPPPPSS"
 
 # Optional per-status pixel map overrides (status name -> 8 char map).
 # Any status not listed here uses DEFAULT_PIXEL_MAP.
