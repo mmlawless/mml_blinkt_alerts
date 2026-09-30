@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-mmlteams.py - Teams status -> Pimoroni Blinkt (8 RGB LEDs) via MQTT
+mml_blinkt_alert_teams.py - Teams status -> Pimoroni Blinkt (8 RGB LEDs) via MQTT
 
 DESCRIPTION OF OPERATION
 ------------------------
