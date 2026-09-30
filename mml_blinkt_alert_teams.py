@@ -1,7 +1,48 @@
 #!/usr/bin/env python3
 """
-mmlteams.py - Teams status → Blinkt via MQTT
-with startup LED patterns for network/MQTT states
+mmlteams.py - Teams status -> Pimoroni Blinkt (8 RGB LEDs) via MQTT
+
+DESCRIPTION OF OPERATION
+------------------------
+1. STARTUP / NETWORK CHECK
+   The script waits until it can open a TCP connection to the MQTT broker.
+   While waiting, the LEDs alternate BLUE / RED / BLUE / RED ...
+
+2. MQTT CONNECTION
+   Once the network is up, the script connects to the broker.
+   While waiting for the MQTT CONNACK, the LEDs alternate BLUE / WHITE ...
+
+3. CONNECTED
+   When connected and subscribed, all LEDs show GREEN for 2 seconds,
+   then all LEDs go WHITE until the first status message arrives.
+
+4. STATUS DISPLAY
+   Node-RED publishes the Teams status as a plain text string to MQTT_TOPIC.
+   Each status is shown using a PRIMARY and a SECONDARY colour:
+
+     - PRIMARY colour   = the "family" colour (e.g. red for busy-type
+                          statuses, yellow for away-type statuses).
+     - SECONDARY colour = a status-specific accent, so you can tell apart
+                          statuses that share the same primary colour
+                          (e.g. Busy vs DND vs Presenting).
+
+   WHICH LEDs GET WHICH COLOUR is controlled by a "pixel map" string of
+   8 characters, one per LED (left to right):
+        "P" = use the PRIMARY colour
+        "S" = use the SECONDARY colour
+   The default map (DEFAULT_PIXEL_MAP) is "SPPPPPPS": the two end LEDs use
+   the secondary colour and the central six use the primary colour.
+   Individual statuses can use a different map via PIXEL_MAP_OVERRIDES.
+
+   Statuses with no accent (Available, Offline, Unknown, etc.) have the
+   same primary and secondary colour, so the whole strip is one colour.
+
+5. UNKNOWN PAYLOAD
+   If a message arrives that is not in STATUS_COLORS, the whole strip is
+   shown bright white.
+
+6. EXIT
+   Ctrl+C clears the LEDs and disconnects cleanly.
 """
 
 import time
@@ -20,24 +61,81 @@ MQTT_TOPIC       = "MMLNR/TeamsStatusOUT"
 # Make client id unique (prevents the broker kicking you off if a 2nd copy runs)
 MQTT_CLIENT_ID = f"mmlteams-blinkt-{socket.gethostname()}-{os.getpid()}"
 
-# Status strings as sent by Node-RED
+# Overall LED brightness for status display (0.0 - 1.0)
+STATUS_BRIGHTNESS = 0.1
+
+# ----- Colour definitions (R, G, B) -----
+OFF     = (0, 0, 0)
+RED     = (255, 0, 0)
+GREEN   = (0, 255, 0)
+BLUE    = (0, 0, 255)
+YELLOW  = (255, 255, 0)
+WHITE   = (255, 255, 255)
+PURPLE  = (128, 0, 128)
+CYAN    = (0, 255, 255)
+ORANGE  = (255, 100, 0)
+LIGHT_BLUE = (0, 128, 255)
+
+# ----- Pixel map -----
+# One character per LED, left to right (8 LEDs on the Blinkt):
+#   "P" = primary colour, "S" = secondary colour
+# Default: end LEDs = secondary, central six = primary.
+# Examples:
+#   "SPPPPPPS"  ends secondary, middle primary   (default)
+#   "PPPPPPPP"  all primary (secondary not shown)
+#   "PPPSSPPP"  centre two secondary
+#   "SSPPPPSS"  outer two each side secondary
+DEFAULT_PIXEL_MAP = "SPPPPPPS"
+
+# Optional per-status pixel map overrides (status name -> 8 char map).
+# Any status not listed here uses DEFAULT_PIXEL_MAP.
+PIXEL_MAP_OVERRIDES = {
+    # "Presenting": "SSPPPPSS",
+}
+
+# ----- Status colours -----
+# Format:  "Status": (PRIMARY colour, SECONDARY colour),
+#
+# Status strings are as sent by Node-RED.
+# Where primary and secondary are the same, the whole strip is one colour.
 STATUS_COLORS = {
-    "Available":     (0, 255, 0),      # Green
-    "Busy":          (255, 0, 0),      # Red
-    "DND":  (128, 0, 128),    # Purple
-    "BeRightBack":   (255, 255, 0),    # Yellow
+    # --- Green family ---
+    # Available:     primary GREEN,  secondary GREEN   (all green)
+    "Available":     (GREEN, GREEN),
 
-    "OnThePhone":    (255, 0, 0),      # Red
-    "Presenting":    (255, 0, 0),      # Red
+    # --- Red family (busy-type statuses) ---
+    # Busy:          primary RED,    secondary WHITE
+    "Busy":          (RED, WHITE),
+    # DND:           primary RED,    secondary PURPLE
+    "DND":           (RED, PURPLE),
+    # OnThePhone:    primary RED,    secondary CYAN
+    "OnThePhone":    (RED, CYAN),
+    # Presenting:    primary RED,    secondary ORANGE
+    "Presenting":    (RED, ORANGE),
+    # InAMeeting:    primary RED,    secondary BLUE
+    "InAMeeting":    (RED, BLUE),
+    # In A Meeting:  primary RED,    secondary BLUE  (alternate spelling)
+    "In A Meeting":  (RED, BLUE),
 
-    "InAMeeting":    (0, 0, 255),      # Blue
-    "Away":          (0, 0, 0),        # Off / Black
-    "Offline":       (255, 255, 255),  # White
+    # --- Yellow family (away-type statuses) ---
+    # BeRightBack:   primary YELLOW, secondary WHITE
+    "BeRightBack":   (YELLOW, WHITE),
 
-    "In A Meeting":  (0, 0, 255),
-    "AppearAway":    (0, 0, 0),
-    "AppearOffline": (255, 255, 255),
-    "Unknown":       (0, 128, 255),    # Light Blue
+    # --- Off ---
+    # Away:          primary OFF,    secondary OFF     (LEDs off)
+    "Away":          (OFF, OFF),
+    # AppearAway:    primary OFF,    secondary OFF     (LEDs off)
+    "AppearAway":    (OFF, OFF),
+
+    # --- White ---
+    # Offline:       primary WHITE,  secondary WHITE   (all white)
+    "Offline":       (WHITE, WHITE),
+    # AppearOffline: primary WHITE,  secondary WHITE   (all white)
+    "AppearOffline": (WHITE, WHITE),
+
+    # --- Fallback for a status Teams/Node-RED reports as "Unknown" ---
+    # Unknown:       primary LIGHT_BLUE, secondary LIGHT_BLUE (all light blue)
+    "Unknown":       (LIGHT_BLUE, LIGHT_BLUE),
 }
 
 connected_to_broker = False
@@ -68,6 +166,23 @@ def show_blue_white_pattern(brightness=0.1):
 def set_blinkt_color(r, g, b, brightness=0.1):
     """Set all Blinkt pixels to one color and show."""
     blinkt.set_all(r, g, b, brightness)
+    blinkt.show()
+
+
+def show_status(status, brightness=STATUS_BRIGHTNESS):
+    """
+    Show a status using its primary/secondary colours and pixel map.
+    Each pixel is set to the primary or secondary colour according to the
+    "P"/"S" character in the pixel map for that status.
+    """
+    primary, secondary = STATUS_COLORS[status]
+    pixel_map = PIXEL_MAP_OVERRIDES.get(status, DEFAULT_PIXEL_MAP).upper()
+
+    for i in range(8):
+        # If the map is shorter than 8 characters, default to primary
+        role = pixel_map[i] if i < len(pixel_map) else "P"
+        r, g, b = secondary if role == "S" else primary
+        blinkt.set_pixel(i, r, g, b, brightness)
     blinkt.show()
 
 
@@ -104,9 +219,8 @@ def on_message(client, userdata, message):
 
     first_message_received = True
 
-    rgb = STATUS_COLORS.get(message_text)
-    if rgb is not None:
-        set_blinkt_color(*rgb, brightness=0.1)
+    if message_text in STATUS_COLORS:
+        show_status(message_text)
     else:
         print("Unknown status payload, using bright white")
         set_blinkt_color(255, 255, 255, brightness=0.5)
@@ -170,7 +284,7 @@ def main():
         show_blue_white_pattern(brightness=0.1)
         time.sleep(0.5)
 
-    # 4) Connected → all green for 2 seconds
+    # 4) Connected -> all green for 2 seconds
     set_blinkt_color(0, 255, 0, brightness=0.1)
     time.sleep(2)
 
